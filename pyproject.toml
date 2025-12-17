@@ -50,6 +50,9 @@ dependencies = [
     "psycopg[binary]>=3.2.9",
     "qdrant-client>=1.15.1",
     "langchain-qdrant>=0.2.0",
+    "datasets>=4.4.1",
+    "requests>=2.32.5",
+    "tqdm>=4.67.1",
 ]
 
 [project.optional-dependencies]
