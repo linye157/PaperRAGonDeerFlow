@@ -89,20 +89,20 @@ export const resourceSuggestion: MentionOptions["suggestion"] = {
         }
       },
 
-      onKeyDown(props) {
-        if (props.event.key === "Escape") {
-          popup?.[0]?.hide();
+	      onKeyDown(props) {
+	        if (props.event.key === "Escape") {
+	          popup?.[0]?.hide();
 
-          return true;
-        }
+	          return true;
+	        }
 
-        return reactRenderer.ref?.onKeyDown(props) ?? false;
-      },
+	        return reactRenderer?.ref?.onKeyDown(props) ?? false;
+	      },
 
-      onExit() {
-        popup?.[0]?.destroy();
-        reactRenderer.destroy();
-      },
-    };
-  },
+	      onExit() {
+	        popup?.[0]?.destroy();
+	        reactRenderer?.destroy();
+	      },
+	    };
+	  },
 };

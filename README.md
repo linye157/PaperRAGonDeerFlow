@@ -10,7 +10,7 @@
 
 ---
 
-## 1. 项目结构（你新增/改动的部分）
+## 1. 项目结构
 
 在 deer-flow 原项目基础上新增/修改：
 
@@ -19,7 +19,7 @@
 * `src/graph/nodes.py`：在 `researcher_node` 的 tools 列表中加入 `scholar_search_tool`
 * `scripts/ingest_ai_arxiv_chunked.py`：本地知识库构建（数据加载→向量化→Qdrant upsert）
 
-> 注：`scripts/ingest_ai_arxiv_chunked.py` 你可以根据自己的数据源调整；本文给出 HuggingFace 数据集方案（体量小、适合一周项目）。
+> 注：`scripts/ingest_ai_arxiv_chunked.py` 脚本用于将 HuggingFace 上的 `jamescalam/ai-arxiv-chunked` 数据集入库到 Qdrant，作为本地论文知识库。该数据集收集了来自 ArXiv 的 400 多篇与机器学习、自然语言处理、大型语言模型等主题相关的论文，文本已经被预处理成较小的段落（通常是 1–2 段落），每条记录对应一种“chunk”，从而支持快速检索或嵌入计算。
 
 ---
 
@@ -28,18 +28,18 @@
 ### 2.1 系统与工具
 
 * Windows：安装 Docker Desktop（用于运行 Qdrant）
-* WSL Ubuntu：运行 deer-flow 与 Python 环境（uv 管理）
-* Ollama：本地模型服务（Embedding）
+* WSL Ubuntu / Linux / macOS：运行 deer-flow 与 Python 环境（uv 管理）
+* Ollama：本地模型服务（Embedding）此处使用 `nomic-embed-text:latest`
 
 ### 2.2 Python 依赖（uv）
 
-在 deer-flow 根目录：
+在 deer-flow 根目录（推荐直接安装项目锁定依赖）：
 
 ```bash
-uv add qdrant-client datasets requests tqdm langchain-core
+uv sync
 ```
 
-> 如果 deer-flow 本身已包含部分依赖，uv 会自动合并。
+> 如果你是二次开发需要新增依赖，再用 `uv add ...` 添加并提交 `pyproject.toml`/`uv.lock`。
 
 ---
 
@@ -52,7 +52,7 @@ git clone https://github.com/bytedance/deer-flow
 cd deer-flow
 ```
 
-### 3.2 配置 deer-flow（按项目原 README）
+### 3.2 配置 deer-flow（按项目[原 README](deer-flow/README_office.md)）
 
 * 按 deer-flow 官方流程配置 `.env` 与 `conf.yaml`
 * 确保 `uv run main.py` 能正常启动
@@ -63,14 +63,7 @@ cd deer-flow
 
 ## 4. 构建本地知识库：Qdrant + arXiv 数据
 
-### 4.1 为什么选择“本地化论文数据集”而不是全量爬 arXiv PDF？
-
-* 全量 arXiv PDF 体积 TB 级，不适合一周项目
-* 使用 HuggingFace 上清洗好的论文数据集（title/summary/chunk 等）可以快速完成 RAG 闭环
-
-### 4.2 启动 Qdrant（Windows Docker Desktop）
-
-#### 推荐方式：Docker Volume（Windows 更稳定）
+### 4.1 下载启动 Qdrant（Windows Docker Desktop）
 
 在 Windows PowerShell：
 
@@ -84,6 +77,17 @@ docker run -d --name qdrant `
   qdrant/qdrant
 ```
 
+Linux/macOS（同样适用）：
+
+```bash
+docker pull qdrant/qdrant
+docker volume create qdrant-storage
+docker run -d --name qdrant \
+  -p 6333:6333 -p 6334:6334 \
+  -v qdrant-storage:/qdrant/storage \
+  qdrant/qdrant
+```
+
 验证：
 
 * Dashboard：`http://localhost:6333/dashboard`
@@ -93,7 +97,9 @@ docker run -d --name qdrant `
 curl -sSf http://localhost:6333 >/dev/null && echo OK
 ```
 
-### 4.3 启动 Ollama 并准备 Embedding 模型
+![运行成功截图](image/1.png)
+
+### 4.2 启动 Ollama 并准备 Embedding 模型
 
 ```bash
 ollama serve
@@ -102,7 +108,7 @@ ollama pull nomic-embed-text:latest
 
 > 本项目要求：**入库与查询必须使用同一个 embedding 模型**。本文默认 `nomic-embed-text:latest`。
 
-### 4.4 环境变量（建议写入 deer-flow 的 `.env`）
+### 4.3 环境变量（建议写入 deer-flow 的 `.env`）
 
 ```bash
 # Qdrant
@@ -147,9 +153,12 @@ uv run python scripts/ingest_ai_arxiv_chunked.py --recreate --limit 2000
 uv run python scripts/ingest_ai_arxiv_chunked.py --limit 20000
 ```
 
+> 注意：`--recreate` 会删除并重建 collection（等价于清空重来）。
+
 验收：
 
-* Qdrant Dashboard 能看到 collection：`deer_scholar_arxiv`
+* Qdrant Dashboard （`http://localhost:6333/dashboard#/collections`）能看到 collection：`deer_scholar_arxiv`
+  ![查看知识库](image/2.png)
 
 ---
 
@@ -187,6 +196,17 @@ uv run python scripts/ingest_ai_arxiv_chunked.py --limit 20000
 ### 6.3 代码位置
 
 `src/tools/scholar.py`：定义 `@tool("scholar_search")` 的 `scholar_search_tool`
+
+### 6.4 测试
+
+在 deer-flow 根目录执行：
+
+```bash
+uv run python -c "from src.tools import scholar_search_tool; print(scholar_search_tool.invoke({'query':'latent diffusion models','top_k':5,'score_threshold':0.60}))"
+```
+
+查看返回结果，预期包含 1～5 条 `latent diffusion models`相关论文（去重后按论文计数），包含 `snippet` 与 `arxiv_id/url`。
+![运行成功截图](image/3.png)
 
 ---
 
@@ -232,57 +252,41 @@ uv run main.py
 
 然后输入问题。
 
-> 注意：如果你发现输出仅由 Coordinator 直接回答且日志提示 `No tool calls ...`，说明这一轮没有触发工具调用。此时建议：
->
-> 1. 在提问中显式要求使用工具；
-> 2. 或调整 prompt/配置，使研究问题默认路由到 researcher。
+> 说明：默认模式会走 DeerFlow 的 planner/researcher 工作流；如果你希望直接做“本地论文证据问答”，建议使用 Deer‑Scholar 模式（见下文 Web UI / API）。
 
-#### 推荐 Demo 问题（更容易触发本地检索）
-* 使用 `/scholar` 前缀强制调用工具：例如
-  ```
-  /scholar 请使用 scholar_search 从本地库检索 5 篇与 latent diffusion models 相关的论文，并基于 snippet 总结关键贡献，给出 arXiv 引用。
-  ```
-
-* “请使用 scholar_search 从本地库检索 5 篇与 latent diffusion models 相关的论文，并基于 snippet 总结关键贡献，给出 arXiv 引用。”
-* “只允许使用 scholar_search 返回的证据回答：RAG 的定义与降低幻觉的机制。”
-
-### 8.2 Web UI（用于录屏演示/面试展示）
+### 8.2 Web UI
 
 （按 deer-flow 官方 README）
 
 ```bash
+cd web
+pnpm install
+cd ..
 ./bootstrap.sh -d
 ```
 
 浏览器打开：`http://localhost:3000`
 
----
+在页面顶部的下拉框选择：
 
-## 9. Demo：本地检索工具冒烟测试
-
-在 deer-flow 根目录执行：
-
-```bash
-uv run python -c "from src.tools import scholar_search_tool; print(scholar_search_tool.invoke({'query':'latent diffusion models','top_k':5}))"
-```
-
-预期：返回 1～5 条相关论文（去重后按论文计数），包含 `snippet` 与 `arxiv_id/url`。
+* `DeerFlow`：默认研究工作流（可能会触发 web search / crawl）
+* `Deer‑Scholar`：直接走本地论文 QA（prompt: `src/prompts/scholar.md`，工具: `scholar_search`）
 
 ---
 
-## 10. 常见问题排查（非常实用）
+## 9. 常见问题排查（非常实用）
 
-### 10.1 Qdrant collection 有了但检索为空
+### 9.1 Qdrant collection 有了但检索为空
 
 * 检查 `SCHOLAR_SCORE_THRESHOLD` 是否过高（你已验证 0.62 合理）
 * 检查入库与查询是否同一 embedding 模型：`nomic-embed-text:latest`
 
-### 10.2 同一篇论文重复出现
+### 9.2 同一篇论文重复出现
 
 * 这是 chunk-level 检索的正常现象
 * 本项目已在 tool 中按 `arxiv_id` 聚合去重
 
-### 10.3 DeerFlow 运行时不调用工具
+### 9.3 DeerFlow 运行时不调用工具
 
 * 这是 Coordinator 判定“无需工具”的常见行为
 * 解决：
@@ -292,7 +296,25 @@ uv run python -c "from src.tools import scholar_search_tool; print(scholar_searc
 
 ---
 
-## 11. 项目亮点（写简历用）
+## 10. API 调用（可选）
+
+DeerFlow 后端 SSE 接口：`POST /api/chat/stream`。
+
+Deer‑Scholar 模式示例（通过 `mode` 路由，不需要 `/scholar` 前缀）：
+
+```bash
+curl -X POST http://localhost:8000/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "scholar",
+    "thread_id": "conversation_scholar_1",
+    "messages": [{"role": "user", "content": "请基于本地检索到的论文片段回答：LoRA 的核心思想是什么？并给出 [arXiv:ID] 引用。"}]
+  }'
+```
+
+---
+
+## 11. 项目亮点
 
 * 基于 DeerFlow Agent 工作流扩展本地检索工具，实现“本地证据优先”的 RAG 问答闭环
 * 构建 Qdrant 本地向量知识库：数据加载→向量化→upsert→检索去重
@@ -303,4 +325,4 @@ uv run python -c "from src.tools import scholar_search_tool; print(scholar_searc
 
 ## 12. License
 
-本项目遵循 deer-flow 原项目 License（MIT）。
+本项目遵循 [deer-flow ](https://github.com/bytedance/deer-flow)原项目 License（MIT）。
