@@ -10,6 +10,7 @@ ASSISTANT_SPEAKER_NAMES = {
     "coder",
     "reporter",
     "background_investigator",
+    "scholar",
 }
 
 

@@ -15,6 +15,7 @@ class State(MessagesState):
 
     # Runtime Variables
     locale: str = "en-US"
+    mode: str = "default"
     research_topic: str = ""
     clarified_research_topic: str = (
         ""  # Complete/final clarified topic with all clarification rounds

@@ -80,6 +80,10 @@ class ChatRequest(BaseModel):
         default_factory=list,
         description="List of tool names to interrupt before execution (e.g., ['db_tool', 'api_tool'])",
     )
+    mode: Optional[str] = Field(
+        "default",
+        description="Chat mode routing (e.g., 'default' or 'scholar')",
+    )
 
 
 class TTSRequest(BaseModel):

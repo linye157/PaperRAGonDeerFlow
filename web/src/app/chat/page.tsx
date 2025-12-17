@@ -10,6 +10,14 @@ import { useTranslations } from "next-intl";
 import { Suspense } from "react";
 
 import { Button } from "~/components/ui/button";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "~/components/ui/select";
+import { setChatMode, useSettingsStore } from "~/core/store";
 
 import { Logo } from "../../components/deer-flow/logo";
 import { ThemeToggle } from "../../components/deer-flow/theme-toggle";
@@ -27,12 +35,22 @@ const Main = dynamic(() => import("./main"), {
 
 export default function HomePage() {
   const t = useTranslations("chat.page");
+  const mode = useSettingsStore((state) => state.general.mode);
 
   return (
     <div className="flex h-screen w-screen justify-center overscroll-none">
       <header className="fixed top-0 left-0 flex h-12 w-full items-center justify-between px-4">
         <Logo />
         <div className="flex items-center">
+          <Select value={mode} onValueChange={(v) => setChatMode(v as "default" | "scholar")}>
+            <SelectTrigger className="mr-2 h-8 w-[160px]">
+              <SelectValue placeholder="Mode" />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="default">DeerFlow</SelectItem>
+              <SelectItem value="scholar">Deer-Scholar</SelectItem>
+            </SelectContent>
+          </Select>
           <Tooltip title={t("starOnGitHub")}>
             <Button variant="ghost" size="icon" asChild>
               <Link

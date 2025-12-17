@@ -107,6 +107,7 @@ export async function sendMessage(
     content ?? "[REPLAY]",
     {
       thread_id: THREAD_ID,
+      mode: settings.mode,
       interrupt_feedback: interruptFeedback,
       resources,
       auto_accepted_plan: settings.autoAcceptedPlan,

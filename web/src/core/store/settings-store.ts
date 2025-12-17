@@ -9,6 +9,7 @@ const SETTINGS_KEY = "deerflow.settings";
 
 const DEFAULT_SETTINGS: SettingsState = {
   general: {
+    mode: "default",
     autoAcceptedPlan: false,
     enableClarification: false,
     maxClarificationRounds: 3,
@@ -26,6 +27,7 @@ const DEFAULT_SETTINGS: SettingsState = {
 
 export type SettingsState = {
   general: {
+    mode: "default" | "scholar";
     autoAcceptedPlan: boolean;
     enableClarification: boolean;
     maxClarificationRounds: number;
@@ -140,6 +142,16 @@ export function setReportStyle(
     general: {
       ...state.general,
       reportStyle: value,
+    },
+  }));
+  saveSettings();
+}
+
+export function setChatMode(value: "default" | "scholar") {
+  useSettingsStore.setState((state) => ({
+    general: {
+      ...state.general,
+      mode: value,
     },
   }));
   saveSettings();

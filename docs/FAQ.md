@@ -7,6 +7,7 @@
 - [How do I view complete model output?](#how-do-i-view-complete-model-output)
 - [How do I enable debug logging?](#how-do-i-enable-debug-logging)
 - [How do I troubleshoot issues?](#how-do-i-troubleshoot-issues)
+- [How do I use Deer-Scholar (local paper QA)?](#how-do-i-use-deer-scholar-local-paper-qa)
 
 ## Where's the name DeerFlow come from?
 
@@ -92,3 +93,19 @@ docker compose restart
 ```
 
 For more detailed troubleshooting steps, see the [Debugging Guide](DEBUGGING.md).
+
+## How do I use Deer-Scholar (local paper QA)?
+
+Prefix your question with `/scholar` to route the workflow directly to the `scholar` agent (prompt: `src/prompts/scholar.md`), which only uses the `scholar_search` tool.
+
+Examples:
+
+```bash
+uv run main.py "/scholar What is LoRA and how does it compare to full fine-tuning?"
+```
+
+In Web UI, send a message like:
+
+```
+/scholar 用检索到的 arXiv 片段回答：LoRA 的核心思想是什么？并给出 [arXiv:ID] 引用。
+```

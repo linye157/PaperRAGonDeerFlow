@@ -41,6 +41,7 @@ export async function* chatStream(
   userMessage: string,
   params: {
     thread_id: string;
+    mode?: "default" | "scholar";
     resources?: Array<Resource>;
     auto_accepted_plan: boolean;
     enable_clarification?: boolean;

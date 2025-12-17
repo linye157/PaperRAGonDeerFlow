@@ -497,10 +497,22 @@ RAG_PROVIDER=ragflow
 curl -X POST http://localhost:8000/api/chat/stream \
   -H "Content-Type: application/json" \
   -d '{
+    "mode": "default",
     "messages": [{"role": "user", "content": "What are the latest AI trends?"}],
     "thread_id": "conversation_1",
     "max_search_results": 5,
     "report_style": "POPULAR_SCIENCE"
+  }'
+```
+
+### Example 1b: Chat with Deer-Scholar (local paper QA)
+```bash
+curl -X POST http://localhost:8000/api/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{
+    "mode": "scholar",
+    "messages": [{"role": "user", "content": "Explain LoRA and cite evidence with [arXiv:ID]."}],
+    "thread_id": "conversation_scholar_1"
   }'
 ```
 

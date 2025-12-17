@@ -15,7 +15,7 @@ from langgraph.types import Command, interrupt
 
 from src.agents import create_agent
 from src.config.agents import AGENT_LLM_MAP
-from src.config.configuration import Configuration
+from src.config.configuration import Configuration, get_recursion_limit
 from src.llms.llm import get_llm_by_type, get_llm_token_limit_by_type
 from src.prompts.planner_model import Plan
 from src.prompts.template import apply_prompt_template
@@ -23,6 +23,7 @@ from src.tools import (
     crawl_tool,
     get_retriever_tool,
     get_web_search_tool,
+    scholar_search_tool,
     python_repl_tool,
 )
 from src.tools.search import LoggedTavilySearch
@@ -33,6 +34,7 @@ from ..config import SELECTED_SEARCH_ENGINE, SearchEngine
 from .types import State
 from .utils import (
     build_clarified_topic_from_history,
+    get_latest_user_message,
     get_message_content,
     is_user_message,
     reconstruct_clarification_history,
@@ -108,6 +110,7 @@ def preserve_state_meta_fields(state: State) -> dict:
     """
     return {
         "locale": state.get("locale", "en-US"),
+        "mode": state.get("mode", "default"),
         "research_topic": state.get("research_topic", ""),
         "clarified_research_topic": state.get("clarified_research_topic", ""),
         "clarification_history": state.get("clarification_history", []),
@@ -515,10 +518,67 @@ def human_feedback_node(
 
 def coordinator_node(
     state: State, config: RunnableConfig
-) -> Command[Literal["planner", "background_investigator", "coordinator", "__end__"]]:
+) -> Command[Literal["planner", "background_investigator", "scholar", "coordinator", "__end__"]]:
     """Coordinator node that communicate with customers and handle clarification."""
     logger.info("Coordinator talking.")
     configurable = Configuration.from_runnable_config(config)
+
+    if (state.get("mode") or "").lower() == "scholar":
+        return Command(
+            update={
+                **preserve_state_meta_fields(state),
+                "resources": configurable.resources,
+                "goto": "scholar",
+            },
+            goto="scholar",
+        )
+
+    _, latest_user_content = get_latest_user_message(state.get("messages", []))
+    if latest_user_content:
+        stripped = latest_user_content.lstrip()
+        scholar_prefixes = ("/scholar", "scholar:", "Deer-Scholar", "deer-scholar")
+        if stripped.startswith(scholar_prefixes):
+            cleaned = stripped
+            if cleaned.startswith("/scholar"):
+                cleaned = cleaned[len("/scholar") :].strip()
+            elif cleaned.lower().startswith("scholar:"):
+                cleaned = cleaned[len("scholar:") :].strip()
+            elif cleaned.lower().startswith("deer-scholar"):
+                cleaned = cleaned[len("deer-scholar") :].lstrip(":").strip()
+
+            if cleaned:
+                updated_messages: list[Any] = []
+                replaced = False
+                for message in state.get("messages", []):
+                    if (
+                        not replaced
+                        and is_user_message(message)
+                        and get_message_content(message) == latest_user_content
+                    ):
+                        if isinstance(message, dict):
+                            updated_messages.append({**message, "content": cleaned})
+                        else:
+                            updated_messages.append(
+                                HumanMessage(
+                                    content=cleaned,
+                                    name=getattr(message, "name", None),
+                                )
+                            )
+                        replaced = True
+                    else:
+                        updated_messages.append(message)
+
+                return Command(
+                    update={
+                        **preserve_state_meta_fields(state),
+                        "messages": updated_messages,
+                        "research_topic": cleaned,
+                        "clarified_research_topic": cleaned,
+                        "resources": configurable.resources,
+                        "goto": "scholar",
+                    },
+                    goto="scholar",
+                )
 
     # Check if clarification is enabled
     enable_clarification = state.get("enable_clarification", False)
@@ -796,6 +856,46 @@ def coordinator_node(
             "goto": goto,
         },
         goto=goto,
+    )
+
+
+async def scholar_node(state: State, config: RunnableConfig) -> Command[Literal["__end__"]]:
+    """Scholar node for local paper QA using only the scholar_search tool."""
+    logger.info("Scholar node is running.")
+    locale = state.get("locale", "en-US")
+    configurable = Configuration.from_runnable_config(config)
+
+    llm_token_limit = get_llm_token_limit_by_type(AGENT_LLM_MAP["scholar"])
+    pre_model_hook = None
+    if llm_token_limit:
+        pre_model_hook = partial(ContextManager(llm_token_limit, 3).compress_messages)
+
+    agent = create_agent(
+        agent_name="scholar",
+        agent_type="scholar",
+        tools=[scholar_search_tool],
+        prompt_template="scholar",
+        pre_model_hook=pre_model_hook,
+        interrupt_before_tools=configurable.interrupt_before_tools,
+        locale=locale,
+    )
+
+    result = await agent.ainvoke(
+        input={"messages": state.get("messages", [])},
+        config={"recursion_limit": get_recursion_limit(default=100)},
+    )
+    agent_messages = result.get("messages", [])
+    last_content = ""
+    if agent_messages:
+        last_content = sanitize_tool_response(str(agent_messages[-1].content))
+
+    return Command(
+        update={
+            **preserve_state_meta_fields(state),
+            "messages": agent_messages,
+            "final_report": last_content,
+        },
+        goto="__end__",
     )
 
 
@@ -1210,7 +1310,7 @@ async def researcher_node(
     configurable = Configuration.from_runnable_config(config)
     logger.debug(f"[researcher_node] Max search results: {configurable.max_search_results}")
     
-    tools = [get_web_search_tool(configurable.max_search_results), crawl_tool]
+    tools = [scholar_search_tool,get_web_search_tool(configurable.max_search_results), crawl_tool]
     retriever_tool = get_retriever_tool(state.get("resources", []))
     if retriever_tool:
         logger.debug(f"[researcher_node] Adding retriever tool to tools list")

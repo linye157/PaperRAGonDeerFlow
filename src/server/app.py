@@ -136,6 +136,7 @@ async def chat_stream(request: ChatRequest):
             request.enable_deep_thinking,
             request.enable_clarification,
             request.max_clarification_rounds,
+            request.mode,
             request.locale,
             request.interrupt_before_tools,
         ),
@@ -521,6 +522,7 @@ async def _astream_workflow_generator(
     enable_deep_thinking: bool,
     enable_clarification: bool,
     max_clarification_rounds: int,
+    mode: str,
     locale: str = "en-US",
     interrupt_before_tools: Optional[List[str]] = None,
 ):
@@ -570,6 +572,7 @@ async def _astream_workflow_generator(
         "enable_clarification": enable_clarification,
         "max_clarification_rounds": max_clarification_rounds,
         "locale": locale,
+        "mode": mode,
     }
 
     if not auto_accepted_plan and interrupt_feedback:
