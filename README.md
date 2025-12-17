@@ -252,7 +252,13 @@ uv run main.py
 
 然后输入问题。
 
-> 说明：默认模式会走 DeerFlow 的 planner/researcher 工作流；如果你希望直接做“本地论文证据问答”，建议使用 Deer‑Scholar 模式（见下文 Web UI / API）。
+> 说明：默认模式会走 DeerFlow 的 planner/researcher 工作流；如果你希望直接做“本地论文证据问答”，建议使用 Deer‑Scholar 模式，即在问题前输入'/scholar'。
+
+demo问题
+ ```
+ /scholar 请使用 scholar_search 从本地库检索 5 篇与 latent diffusion models 相关的论文，并基于 snippet 总结关键贡献，给出 arXiv 引用。
+ ```
+![运行结果](image/4.png)
 
 ### 8.2 Web UI
 
