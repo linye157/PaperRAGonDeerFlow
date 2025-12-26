@@ -255,9 +255,11 @@ uv run main.py
 > 说明：默认模式会走 DeerFlow 的 planner/researcher 工作流；如果你希望直接做“本地论文证据问答”，建议使用 Deer‑Scholar 模式，即在问题前输入'/scholar'。
 
 demo问题
- ```
+
+```
  /scholar 请使用 scholar_search 从本地库检索 5 篇与 latent diffusion models 相关的论文，并基于 snippet 总结关键贡献，给出 arXiv 引用。
- ```
+```
+
 ![运行结果](image/4.png)
 
 ### 8.2 Web UI
@@ -332,3 +334,8 @@ curl -X POST http://localhost:8000/api/chat/stream \
 ## 12. License
 
 本项目遵循 [deer-flow ](https://github.com/bytedance/deer-flow)原项目 License（MIT）。
+
+## TODO：
+1.  支持增量入库与 PDF/本地文件解析；
+2.  做离线评测集，量化 recall/precision 与引用覆盖率；
+3.  在 UI 上提供“引用片段高亮/跳转原文”提升可用性。
