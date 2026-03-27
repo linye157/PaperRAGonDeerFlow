@@ -37,3 +37,6 @@ READMEFORWORK.md
 .github
 test_sample.py
 Commad.md
+
+# SQLite database
+data/*.db

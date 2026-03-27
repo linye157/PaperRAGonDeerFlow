@@ -4,9 +4,9 @@ import json
 import logging
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from langgraph.store.memory import InMemoryStore
+from sqlalchemy.orm import Session
 
 from src.api.schemas import (
     APIResponse,
@@ -16,6 +16,8 @@ from src.api.schemas import (
     SessionDetailResponse,
     SessionResponse,
 )
+from src.db.database import get_db
+from src.db import crud
 from src.graph.builder import build_graph_with_memory
 
 logger = logging.getLogger("deer_scholar.api.chat")
@@ -23,46 +25,57 @@ logger = logging.getLogger("deer_scholar.api.chat")
 router = APIRouter(prefix="/api/v1/chat", tags=["对话管理"])
 
 # 复用 DeerFlow 原有的 graph
-_in_memory_store = InMemoryStore()
 _graph = build_graph_with_memory()
 
-# 内存中的会话存储（任务2会迁移到 SQLite）
-_sessions: dict[str, dict] = {}
-_messages: dict[str, list[dict]] = {}
+
+def _session_to_response(s) -> SessionResponse:
+    return SessionResponse(
+        id=s.id, title=s.title, created_at=s.created_at, updated_at=s.updated_at
+    )
+
+
+def _message_to_response(m) -> MessageResponse:
+    sources = None
+    if m.sources:
+        try:
+            sources = json.loads(m.sources)
+        except (json.JSONDecodeError, TypeError):
+            sources = None
+    return MessageResponse(
+        id=m.id,
+        session_id=m.session_id,
+        role=m.role,
+        content=m.content,
+        sources=sources,
+        created_at=m.created_at,
+    )
 
 
 @router.post("/stream", summary="SSE 流式问答")
-async def chat_stream(request: ChatStreamRequest):
+async def chat_stream(request: ChatStreamRequest, db: Session = Depends(get_db)):
     """流式问答接口，基于 DeerFlow LangGraph 工作流。"""
-    from datetime import datetime, timezone
+    session_id = request.session_id
 
-    session_id = request.session_id or str(uuid4())
-
-    # 自动创建会话
-    if session_id not in _sessions:
-        now = datetime.now(timezone.utc)
-        _sessions[session_id] = {
-            "id": session_id,
-            "title": request.query[:50] if request.query else "新对话",
-            "created_at": now.isoformat(),
-            "updated_at": now.isoformat(),
-        }
-        _messages[session_id] = []
+    # 自动创建或获取会话
+    if not session_id:
+        session = crud.create_session(
+            db, title=request.query[:50] if request.query else "新对话"
+        )
+        session_id = session.id
+    else:
+        session = crud.get_session(db, session_id)
+        if not session:
+            session = crud.create_session(
+                db, title=request.query[:50] if request.query else "新对话"
+            )
+            session_id = session.id
 
     # 记录用户消息
-    user_msg = {
-        "id": str(uuid4()),
-        "session_id": session_id,
-        "role": "user",
-        "content": request.query,
-        "sources": None,
-        "created_at": datetime.now(timezone.utc).isoformat(),
-    }
-    _messages[session_id].append(user_msg)
+    crud.create_message(db, session_id=session_id, role="user", content=request.query)
+    crud.update_session_time(db, session_id)
 
     # 构造 DeerFlow 原始消息格式
     messages = [{"role": "user", "content": request.query}]
-
     thread_id = session_id
 
     async def event_generator():
@@ -85,7 +98,6 @@ async def chat_stream(request: ChatStreamRequest):
                 },
                 stream_mode="messages",
             ):
-                # event 是 (message_chunk, metadata) 元组
                 if isinstance(event, tuple) and len(event) == 2:
                     msg_chunk, metadata = event
                     content = getattr(msg_chunk, "content", "")
@@ -104,18 +116,19 @@ async def chat_stream(request: ChatStreamRequest):
             logger.error(f"Stream error: {e}", exc_info=True)
             yield f"data: {json.dumps({'error': str(e)})}\n\n"
 
-        # 记录助手消息
+        # 记录助手消息到数据库
         full_content = "".join(collected_content)
         if full_content:
-            assistant_msg = {
-                "id": str(uuid4()),
-                "session_id": session_id,
-                "role": "assistant",
-                "content": full_content,
-                "sources": None,
-                "created_at": datetime.now(timezone.utc).isoformat(),
-            }
-            _messages[session_id].append(assistant_msg)
+            from src.db.database import SessionLocal
+
+            with SessionLocal() as db_inner:
+                crud.create_message(
+                    db_inner,
+                    session_id=session_id,
+                    role="assistant",
+                    content=full_content,
+                )
+                crud.update_session_time(db_inner, session_id)
 
         yield "data: [DONE]\n\n"
 
@@ -123,54 +136,41 @@ async def chat_stream(request: ChatStreamRequest):
 
 
 @router.post("/sessions", summary="创建新对话")
-async def create_session(request: CreateSessionRequest = None):
+async def create_session_endpoint(
+    request: CreateSessionRequest = None, db: Session = Depends(get_db)
+):
     """创建一个新的对话会话。"""
-    from datetime import datetime, timezone
-
-    session_id = str(uuid4())
-    now = datetime.now(timezone.utc)
-    session = {
-        "id": session_id,
-        "title": (request.title if request and request.title else "新对话"),
-        "created_at": now.isoformat(),
-        "updated_at": now.isoformat(),
-    }
-    _sessions[session_id] = session
-    _messages[session_id] = []
-
-    return APIResponse(data=SessionResponse(**session))
+    title = (request.title if request and request.title else "新对话")
+    session = crud.create_session(db, title=title)
+    return APIResponse(data=_session_to_response(session))
 
 
 @router.get("/sessions", summary="获取对话列表")
-async def list_sessions():
+async def list_sessions(db: Session = Depends(get_db)):
     """获取所有对话会话列表，按更新时间倒序。"""
-    sessions = sorted(
-        _sessions.values(),
-        key=lambda s: s["updated_at"],
-        reverse=True,
-    )
-    return APIResponse(data=[SessionResponse(**s) for s in sessions])
+    sessions = crud.list_sessions(db)
+    return APIResponse(data=[_session_to_response(s) for s in sessions])
 
 
 @router.get("/sessions/{session_id}", summary="获取单个对话历史")
-async def get_session(session_id: str):
+async def get_session(session_id: str, db: Session = Depends(get_db)):
     """获取指定对话的详细信息和消息历史。"""
-    if session_id not in _sessions:
+    session = crud.get_session(db, session_id)
+    if not session:
         raise HTTPException(status_code=404, detail="会话不存在")
 
-    session = SessionResponse(**_sessions[session_id])
-    msgs = [MessageResponse(**m) for m in _messages.get(session_id, [])]
-
-    return APIResponse(data=SessionDetailResponse(session=session, messages=msgs))
+    msgs = crud.get_messages(db, session_id)
+    return APIResponse(
+        data=SessionDetailResponse(
+            session=_session_to_response(session),
+            messages=[_message_to_response(m) for m in msgs],
+        )
+    )
 
 
 @router.delete("/sessions/{session_id}", summary="删除对话")
-async def delete_session(session_id: str):
+async def delete_session(session_id: str, db: Session = Depends(get_db)):
     """删除指定对话及其所有消息。"""
-    if session_id not in _sessions:
+    if not crud.delete_session(db, session_id):
         raise HTTPException(status_code=404, detail="会话不存在")
-
-    del _sessions[session_id]
-    _messages.pop(session_id, None)
-
     return APIResponse(message="对话已删除")

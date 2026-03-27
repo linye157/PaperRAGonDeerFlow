@@ -6,12 +6,16 @@ from fastapi import FastAPI
 
 from src.api.middleware import JSONFormatter, setup_middleware
 from src.api.routers import chat, knowledge, search, system
+from src.db.database import init_db
 
 # 配置结构化日志
 handler = logging.StreamHandler()
 handler.setFormatter(JSONFormatter())
 logging.getLogger("deer_scholar").addHandler(handler)
 logging.getLogger("deer_scholar").setLevel(logging.INFO)
+
+# 初始化数据库（自动建表）
+init_db()
 
 app = FastAPI(
     title="Deer-Scholar API",

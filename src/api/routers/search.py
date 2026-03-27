@@ -7,6 +7,7 @@ from typing import List
 import requests
 from fastapi import APIRouter, Depends, HTTPException
 from qdrant_client import QdrantClient
+from sqlalchemy.orm import Session
 
 from src.api.dependencies import (
     get_ollama_base_url,
@@ -21,6 +22,8 @@ from src.api.schemas import (
     ScholarSearchRequest,
     SimilarSearchRequest,
 )
+from src.db.database import get_db
+from src.db import crud
 from src.tools.scholar import scholar_search_tool
 
 logger = logging.getLogger("deer_scholar.api.search")
@@ -29,7 +32,7 @@ router = APIRouter(prefix="/api/v1/search", tags=["独立检索"])
 
 
 @router.post("/scholar", summary="独立调用 scholar_search")
-async def scholar_search(req: ScholarSearchRequest):
+async def scholar_search(req: ScholarSearchRequest, db: Session = Depends(get_db)):
     """直接调用 scholar_search 工具进行论文检索。"""
     start = time.time()
 
@@ -47,6 +50,16 @@ async def scholar_search(req: ScholarSearchRequest):
     latency_ms = (time.time() - start) * 1000
     record_search_latency(latency_ms)
 
+    # 记录检索日志到数据库
+    crud.create_search_log(
+        db,
+        query=req.query,
+        top_k=req.top_k,
+        threshold=req.score_threshold,
+        result_count=len(results),
+        latency_ms=latency_ms,
+    )
+
     papers = [PaperResult(**r) for r in results]
     return APIResponse(data=papers)
 
@@ -54,6 +67,7 @@ async def scholar_search(req: ScholarSearchRequest):
 @router.post("/similar", summary="相似论文推荐")
 async def similar_papers(
     req: SimilarSearchRequest,
+    db: Session = Depends(get_db),
     qdrant: QdrantClient = Depends(get_qdrant_client),
     collection: str = Depends(get_qdrant_collection),
     ollama_url: str = Depends(get_ollama_base_url),
@@ -63,7 +77,6 @@ async def similar_papers(
     start = time.time()
 
     try:
-        # 1) 找到目标论文的某个 chunk
         from qdrant_client.http.models import Filter, FieldCondition, MatchValue
 
         hits, _ = qdrant.scroll(
@@ -84,7 +97,6 @@ async def similar_papers(
         if not hits:
             raise HTTPException(status_code=404, detail=f"论文 {req.arxiv_id} 不存在")
 
-        # 2) 用论文标题 + 摘要作为查询，生成 embedding
         payload = hits[0].payload or {}
         title = payload.get("title", "")
         summary = payload.get("summary", "")
@@ -105,7 +117,6 @@ async def similar_papers(
         if not vec:
             raise HTTPException(status_code=500, detail="Embedding 生成失败")
 
-        # 3) 相似度搜索（排除自身）
         raw_hits = qdrant.search(
             collection_name=collection,
             query_vector=vec,
@@ -113,7 +124,6 @@ async def similar_papers(
             with_payload=True,
         )
 
-        # 去重：按 arxiv_id，排除查询论文本身
         best_by_paper: dict = {}
         for h in raw_hits:
             p = h.payload or {}
@@ -147,5 +157,15 @@ async def similar_papers(
 
     latency_ms = (time.time() - start) * 1000
     record_search_latency(latency_ms)
+
+    # 记录检索日志
+    crud.create_search_log(
+        db,
+        query=f"similar:{req.arxiv_id}",
+        top_k=req.top_k,
+        threshold=None,
+        result_count=len(results),
+        latency_ms=latency_ms,
+    )
 
     return APIResponse(data=results)

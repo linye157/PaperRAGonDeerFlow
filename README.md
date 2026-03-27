@@ -18,8 +18,10 @@
 * `src/tools/__init__.py`：导出 `scholar_search_tool`
 * `src/graph/nodes.py`：在 `researcher_node` 的 tools 列表中加入 `scholar_search_tool`
 * `scripts/ingest_ai_arxiv_chunked.py`：本地知识库构建（数据加载→向量化→Qdrant upsert）
+* `src/api/`：RESTful API 层（FastAPI router + Pydantic + 中间件）
+* `src/db/`：数据库持久化层（SQLite + SQLAlchemy ORM）
 
-> 注：`scripts/ingest_ai_arxiv_chunked.py` 脚本用于将 HuggingFace 上的 `jamescalam/ai-arxiv-chunked` 数据集入库到 Qdrant，作为本地论文知识库。该数据集收集了来自 ArXiv 的 400 多篇与机器学习、自然语言处理、大型语言模型等主题相关的论文，文本已经被预处理成较小的段落（通常是 1–2 段落），每条记录对应一种“chunk”，从而支持快速检索或嵌入计算。
+> 注：`scripts/ingest_ai_arxiv_chunked.py` 脚本用于将 HuggingFace 上的 `jamescalam/ai-arxiv-chunked` 数据集入库到 Qdrant，作为本地论文知识库。该数据集收集了来自 ArXiv 的 400 多篇与机器学习、自然语言处理、大型语言模型等主题相关的论文，文本已经被预处理成较小的段落（通常是 1–2 段落），每条记录对应一种”chunk”，从而支持快速检索或嵌入计算。
 
 ---
 
@@ -410,14 +412,45 @@ curl http://localhost:8000/api/v1/knowledge/stats
 
 > 注：DeerFlow 原有的 `POST /api/chat/stream` 接口仍保留在 `src/server/app.py` 中，新的 v1 API 是独立的服务入口
 
+### 10.6 数据库持久化层
+
+引入 SQLite + SQLAlchemy 实现数据持久化，服务启动时自动建表，数据存储在 `data/deer_scholar.db`。
+
+**模块结构：**
+```
+src/db/
+├── __init__.py
+├── database.py          # 引擎初始化、Session 工厂、get_db 依赖注入
+├── models.py            # ORM 模型（4 张表）
+└── crud.py              # CRUD 操作封装
+```
+
+**数据模型：**
+
+| 表名 | 说明 | 关键字段 |
+|------|------|----------|
+| `chat_sessions` | 对话会话 | id, title, created_at, updated_at |
+| `chat_messages` | 对话消息 | id, session_id(FK), role, content, sources |
+| `ingest_tasks` | 入库任务 | id, status, source_type, total/processed_chunks |
+| `search_logs` | 检索日志 | id, query, top_k, threshold, result_count, latency_ms |
+
+**配置数据库路径（可选）：**
+```bash
+# 默认：data/deer_scholar.db
+# 自定义：
+DATABASE_URL=sqlite:///./custom_path/my.db
+```
+
 ---
 
 ## 11. 项目亮点
 
-* 基于 DeerFlow Agent 工作流扩展本地检索工具，实现“本地证据优先”的 RAG 问答闭环
+* 基于 DeerFlow Agent 工作流扩展本地检索工具，实现”本地证据优先”的 RAG 问答闭环
 * 构建 Qdrant 本地向量知识库：数据加载→向量化→upsert→检索去重
 * 实现 RAG 降幻觉策略：返回可引用证据（arXiv id/URL/snippet），并用相似度阈值控制低相关结果
 * 兼容离线部署：Ollama Embedding + 本地/内网 Qdrant
+* 完整 RESTful API 体系：14 个端点，统一响应格式，OpenAPI 文档自动生成
+* 数据库持久化：SQLite + SQLAlchemy ORM，对话历史/入库任务/检索日志全量持久化
 
 ---
 
@@ -543,6 +576,6 @@ RAG 评测报告
 2.  ~~做离线评测集，量化 recall/precision 与引用覆盖率~~（已完成，见 12. RAG 评测框架）；
 3.  在 UI 上提供”引用片段高亮/跳转原文”提升可用性；
 4.  ~~RESTful API 体系~~（已完成，见 10. RESTful API 体系）；
-5.  数据库持久化层（SQLite + SQLAlchemy）；
+5.  ~~数据库持久化层~~（已完成，见 10.6 数据库持久化层）；
 6.  Docker Compose 统一编排；
 7.  缓存层（Embedding 缓存 + 检索结果缓存）。

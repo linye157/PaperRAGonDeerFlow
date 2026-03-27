@@ -25,180 +25,189 @@ from src.api.schemas import (
     IngestTaskResponse,
     KnowledgeStatsResponse,
 )
+from src.db.database import SessionLocal, get_db
+from src.db import crud
 
 logger = logging.getLogger("deer_scholar.api.knowledge")
 
 router = APIRouter(prefix="/api/v1/knowledge", tags=["知识库管理"])
 
-# 内存中的任务存储（任务2会迁移到 SQLite）
-_ingest_tasks: dict[str, dict] = {}
+
+def _task_to_response(task) -> IngestTaskResponse:
+    return IngestTaskResponse(
+        id=task.id,
+        status=task.status,
+        source_type=task.source_type,
+        total_chunks=task.total_chunks,
+        processed_chunks=task.processed_chunks,
+        error_message=task.error_message,
+        created_at=task.created_at,
+        completed_at=task.completed_at,
+    )
 
 
 def _run_ingest_pipeline(task_id: str, req: IngestRequest) -> None:
-    """执行论文入库 ETL 流水线（同步，由 BackgroundTasks 调用）。"""
-    task = _ingest_tasks[task_id]
-    task["status"] = "processing"
+    """执行论文入库 ETL 流水线（同步，由线程池调用）。"""
+    with SessionLocal() as db:
+        crud.update_ingest_task(db, task_id, status="processing")
 
-    try:
-        from datasets import load_dataset
-        from qdrant_client.http.models import VectorParams, Distance, PointStruct
+        try:
+            from datasets import load_dataset
+            from qdrant_client.http.models import VectorParams, Distance, PointStruct
 
-        qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
-        collection = os.getenv("QDRANT_COLLECTION", "deer_scholar_arxiv")
-        ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
+            qdrant_url = os.getenv("QDRANT_URL", "http://localhost:6333")
+            collection = os.getenv("QDRANT_COLLECTION", "deer_scholar_arxiv")
+            ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+            embed_model = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
 
-        # 1) 加载数据集
-        ds = load_dataset(req.dataset_name, split="train")
-        if req.limit and req.limit < len(ds):
-            ds = ds.select(range(req.limit))
-        task["total_chunks"] = len(ds)
+            # 1) 加载数据集
+            ds = load_dataset(req.dataset_name, split="train")
+            if req.limit and req.limit < len(ds):
+                ds = ds.select(range(req.limit))
+            crud.update_ingest_task(db, task_id, total_chunks=len(ds))
 
-        # 2) 初始化 Qdrant
-        api_key = os.getenv("QDRANT_API_KEY")
-        qc = QdrantClient(url=qdrant_url, api_key=api_key) if api_key else QdrantClient(url=qdrant_url)
+            # 2) 初始化 Qdrant
+            api_key = os.getenv("QDRANT_API_KEY")
+            qc = QdrantClient(url=qdrant_url, api_key=api_key) if api_key else QdrantClient(url=qdrant_url)
 
-        # 3) 探测向量维度
-        r = requests.post(
-            f"{ollama_url.rstrip('/')}/api/embeddings",
-            json={"model": embed_model, "prompt": "dimension probe"},
-            timeout=60,
-        )
-        r.raise_for_status()
-        dim = len(r.json()["embedding"])
+            # 3) 探测向量维度
+            r = requests.post(
+                f"{ollama_url.rstrip('/')}/api/embeddings",
+                json={"model": embed_model, "prompt": "dimension probe"},
+                timeout=60,
+            )
+            r.raise_for_status()
+            dim = len(r.json()["embedding"])
 
-        # 4) 创建/重建 collection
-        if req.recreate and qc.collection_exists(collection):
-            qc.delete_collection(collection)
-        if not qc.collection_exists(collection):
-            qc.create_collection(
-                collection_name=collection,
-                vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+            # 4) 创建/重建 collection
+            if req.recreate and qc.collection_exists(collection):
+                qc.delete_collection(collection)
+            if not qc.collection_exists(collection):
+                qc.create_collection(
+                    collection_name=collection,
+                    vectors_config=VectorParams(size=dim, distance=Distance.COSINE),
+                )
+
+            # 5) 批量 upsert
+            buf_points = []
+            buf_texts = []
+            processed = 0
+
+            def flush():
+                nonlocal buf_points, buf_texts, processed
+                if not buf_points:
+                    return
+                vecs = []
+                for t in buf_texts:
+                    resp = requests.post(
+                        f"{ollama_url.rstrip('/')}/api/embeddings",
+                        json={"model": embed_model, "prompt": t},
+                        timeout=60,
+                    )
+                    resp.raise_for_status()
+                    vecs.append(resp.json()["embedding"])
+                for p, v in zip(buf_points, vecs):
+                    p.vector = v
+                qc.upsert(collection_name=collection, points=buf_points)
+                processed += len(buf_points)
+                crud.update_ingest_task(db, task_id, processed_chunks=processed)
+                buf_points, buf_texts = [], []
+
+            for row in ds:
+                arxiv_id = row.get("id")
+                chunk_id = row.get("chunk-id")
+                chunk_text = row.get("chunk") or ""
+                title = row.get("title") or ""
+                summary = row.get("summary") or ""
+
+                doc_text = f"Title: {title}\nAbstract: {summary}\nChunk: {chunk_text}".strip()
+
+                payload = {
+                    "arxiv_id": arxiv_id,
+                    "chunk_id": chunk_id,
+                    "title": title,
+                    "summary": summary,
+                    "categories": row.get("categories"),
+                    "primary_category": row.get("primary_category"),
+                    "authors": row.get("authors"),
+                    "published": row.get("published"),
+                    "updated": row.get("updated"),
+                    "pdf_url": row.get("source"),
+                    "comment": row.get("comment"),
+                }
+
+                point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{arxiv_id}:{chunk_id}"))
+                buf_points.append(PointStruct(id=point_id, vector=[], payload=payload))
+                buf_texts.append(doc_text)
+
+                if len(buf_points) >= req.batch_size:
+                    flush()
+
+            flush()
+
+            crud.update_ingest_task(
+                db, task_id,
+                status="completed",
+                completed_at=datetime.now(timezone.utc),
             )
 
-        # 5) 批量 upsert
-        buf_points = []
-        buf_texts = []
-
-        def flush():
-            nonlocal buf_points, buf_texts
-            if not buf_points:
-                return
-            vecs = []
-            for t in buf_texts:
-                resp = requests.post(
-                    f"{ollama_url.rstrip('/')}/api/embeddings",
-                    json={"model": embed_model, "prompt": t},
-                    timeout=60,
-                )
-                resp.raise_for_status()
-                vecs.append(resp.json()["embedding"])
-            for p, v in zip(buf_points, vecs):
-                p.vector = v
-            qc.upsert(collection_name=collection, points=buf_points)
-            task["processed_chunks"] += len(buf_points)
-            buf_points, buf_texts = [], []
-
-        for row in ds:
-            arxiv_id = row.get("id")
-            chunk_id = row.get("chunk-id")
-            chunk_text = row.get("chunk") or ""
-            title = row.get("title") or ""
-            summary = row.get("summary") or ""
-
-            doc_text = f"Title: {title}\nAbstract: {summary}\nChunk: {chunk_text}".strip()
-
-            payload = {
-                "arxiv_id": arxiv_id,
-                "chunk_id": chunk_id,
-                "title": title,
-                "summary": summary,
-                "categories": row.get("categories"),
-                "primary_category": row.get("primary_category"),
-                "authors": row.get("authors"),
-                "published": row.get("published"),
-                "updated": row.get("updated"),
-                "pdf_url": row.get("source"),
-                "comment": row.get("comment"),
-            }
-
-            point_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{arxiv_id}:{chunk_id}"))
-            buf_points.append(PointStruct(id=point_id, vector=[], payload=payload))
-            buf_texts.append(doc_text)
-
-            if len(buf_points) >= req.batch_size:
-                flush()
-
-        flush()
-
-        task["status"] = "completed"
-        task["completed_at"] = datetime.now(timezone.utc).isoformat()
-
-    except Exception as e:
-        logger.error(f"Ingest pipeline failed: {e}", exc_info=True)
-        task["status"] = "failed"
-        task["error_message"] = str(e)
+        except Exception as e:
+            logger.error(f"Ingest pipeline failed: {e}", exc_info=True)
+            crud.update_ingest_task(db, task_id, status="failed", error_message=str(e))
 
 
 @router.post("/ingest", summary="触发论文入库（异步任务）")
-async def trigger_ingest(req: IngestRequest):
-    """创建异步入库任务，使用 BackgroundTasks 执行 ETL 流水线。"""
-    from fastapi import BackgroundTasks
+async def trigger_ingest(req: IngestRequest, db: Session = Depends(get_db)):
+    """创建异步入库任务，使用线程池执行 ETL 流水线。"""
+    from sqlalchemy.orm import Session
 
-    task_id = str(uuid.uuid4())
-    now = datetime.now(timezone.utc)
+    task = crud.create_ingest_task(db, source_type=req.source_type)
 
-    task = {
-        "id": task_id,
-        "status": "pending",
-        "source_type": req.source_type,
-        "total_chunks": 0,
-        "processed_chunks": 0,
-        "error_message": None,
-        "created_at": now.isoformat(),
-        "completed_at": None,
-    }
-    _ingest_tasks[task_id] = task
-
-    # 在后台线程中执行入库
     loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _run_ingest_pipeline, task_id, req)
+    loop.run_in_executor(None, _run_ingest_pipeline, task.id, req)
 
-    return APIResponse(data=IngestTaskResponse(**task))
+    return APIResponse(data=_task_to_response(task))
 
 
 @router.get("/tasks/{task_id}", summary="查询入库任务状态")
-async def get_task_status(task_id: str):
+async def get_task_status(task_id: str, db: Session = Depends(get_db)):
     """查询指定入库任务的状态和进度。"""
-    if task_id not in _ingest_tasks:
+    task = crud.get_ingest_task(db, task_id)
+    if not task:
         raise HTTPException(status_code=404, detail="任务不存在")
-
-    return APIResponse(data=IngestTaskResponse(**_ingest_tasks[task_id]))
+    return APIResponse(data=_task_to_response(task))
 
 
 @router.get("/tasks/{task_id}/progress", summary="SSE 推送入库进度")
 async def task_progress(task_id: str):
     """通过 SSE 流式推送入库任务进度。"""
-    if task_id not in _ingest_tasks:
-        raise HTTPException(status_code=404, detail="任务不存在")
+    # 先检查任务是否存在
+    with SessionLocal() as db:
+        task = crud.get_ingest_task(db, task_id)
+        if not task:
+            raise HTTPException(status_code=404, detail="任务不存在")
 
     async def event_generator():
         while True:
-            task = _ingest_tasks[task_id]
-            total = task["total_chunks"]
-            processed = task["processed_chunks"]
-            progress = processed / total if total > 0 else 0
+            with SessionLocal() as db:
+                task = crud.get_ingest_task(db, task_id)
+                if not task:
+                    break
+                total = task.total_chunks
+                processed = task.processed_chunks
+                progress = processed / total if total > 0 else 0
+                status = task.status
 
             data = json.dumps({
                 "task_id": task_id,
-                "status": task["status"],
+                "status": status,
                 "progress": round(progress, 4),
                 "processed_chunks": processed,
                 "total_chunks": total,
             })
             yield f"data: {data}\n\n"
 
-            if task["status"] in ("completed", "failed"):
+            if status in ("completed", "failed"):
                 break
             await asyncio.sleep(1)
 
@@ -224,7 +233,7 @@ async def knowledge_stats(
                 distance = str(vec_cfg.distance) if vec_cfg.distance else "Cosine"
 
         # 估算去重论文数（通过 scroll 采样）
-        unique_papers = total_points  # 默认等于 chunk 数
+        unique_papers = total_points
         try:
             sample, _ = qdrant.scroll(
                 collection_name=collection,
