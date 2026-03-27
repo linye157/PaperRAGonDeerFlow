@@ -1,4 +1,4 @@
-"""依赖注入：Qdrant client、Ollama URL 等共享资源。"""
+"""依赖注入：Qdrant client、Ollama URL、Redis URL 等共享资源。"""
 
 import os
 from functools import lru_cache
@@ -9,6 +9,7 @@ QDRANT_URL = os.getenv("QDRANT_URL", "http://localhost:6333")
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "deer_scholar_arxiv")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 OLLAMA_EMBED_MODEL = os.getenv("OLLAMA_EMBED_MODEL", "nomic-embed-text:latest")
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379/0")
 
 
 @lru_cache()
@@ -30,3 +31,7 @@ def get_ollama_base_url() -> str:
 
 def get_ollama_embed_model() -> str:
     return OLLAMA_EMBED_MODEL
+
+
+def get_redis_url() -> str:
+    return REDIS_URL

@@ -4,15 +4,12 @@ import logging
 
 from fastapi import FastAPI
 
-from src.api.middleware import JSONFormatter, setup_middleware
+from src.api.middleware import setup_logging, setup_middleware
 from src.api.routers import chat, knowledge, search, system
 from src.db.database import init_db
 
-# 配置结构化日志
-handler = logging.StreamHandler()
-handler.setFormatter(JSONFormatter())
-logging.getLogger("deer_scholar").addHandler(handler)
-logging.getLogger("deer_scholar").setLevel(logging.INFO)
+# 配置结构化日志（带请求 ID 上下文传递）
+setup_logging()
 
 # 初始化数据库（自动建表）
 init_db()

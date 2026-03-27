@@ -381,7 +381,7 @@ src/api/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| GET | `/api/v1/health` | 健康检查（Qdrant/Ollama 连通性） |
+| GET | `/api/v1/health` | 健康检查（Qdrant/Ollama/Redis/SQLite） |
 | GET | `/api/v1/metrics` | 基础指标（请求数、延迟等） |
 
 ### 10.5 API 调用示例
@@ -492,6 +492,49 @@ docker compose -f docker-compose.scholar.yml down
 * 完整 RESTful API 体系：14 个端点，统一响应格式，OpenAPI 文档自动生成
 * 数据库持久化：SQLite + SQLAlchemy ORM，对话历史/入库任务/检索日志全量持久化
 * Docker Compose 一键部署：API + Qdrant + Ollama + Redis 统一编排
+* 健康检查与结构化日志：四服务连通性检测 + JSON 格式日志 + 请求 ID 链路追踪
+
+---
+
+### 10.8 健康检查与结构化日志
+
+**健康检查**（`GET /api/v1/health`）覆盖四个服务：
+
+| 检查项 | 检测方式 | 说明 |
+|--------|----------|------|
+| Qdrant | `get_collections()` | 向量库连通性 |
+| Ollama | `GET /api/tags` | Embedding 服务连通性 |
+| Redis | TCP PING/PONG | 缓存服务连通性 |
+| SQLite | `SELECT 1` | 数据库连通性 |
+
+返回示例：
+```json
+{
+  "code": 200,
+  "data": {
+    "status": "healthy",
+    "checks": {
+      "qdrant": {"status": "healthy"},
+      "ollama": {"status": "healthy"},
+      "redis": {"status": "healthy"},
+      "sqlite": {"status": "healthy"}
+    }
+  }
+}
+```
+
+状态判断：全部 healthy → `healthy`；部分异常 → `degraded`；全部异常 → `unhealthy`
+
+**结构化日志**：
+- JSON 格式输出，包含 timestamp、level、module、message、request_id
+- 基于 `contextvars` 的请求 ID 上下文传递，整条请求链路共享同一 request_id
+- 响应头自动携带 `X-Request-ID`，便于前端关联排查
+
+日志示例：
+```json
+{"timestamp": "2026-03-27 10:00:00", "level": "INFO", "module": "middleware", "message": "[a1b2c3d4] --> POST /api/v1/search/scholar", "request_id": "a1b2c3d4"}
+{"timestamp": "2026-03-27 10:00:01", "level": "INFO", "module": "middleware", "message": "[a1b2c3d4] <-- POST /api/v1/search/scholar 200 156.3ms", "request_id": "a1b2c3d4"}
+```
 
 ---
 
