@@ -1,4 +1,4 @@
-"""独立检索 API：scholar_search 调用、相似论文推荐。"""
+"""独立检索 API：scholar_search 调用、相似论文推荐（含缓存层）。"""
 
 import logging
 import time
@@ -22,6 +22,7 @@ from src.api.schemas import (
     ScholarSearchRequest,
     SimilarSearchRequest,
 )
+from src.cache import get_embedding_cache, get_search_cache
 from src.db.database import get_db
 from src.db import crud
 from src.tools.scholar import scholar_search_tool
@@ -33,9 +34,34 @@ router = APIRouter(prefix="/api/v1/search", tags=["独立检索"])
 
 @router.post("/scholar", summary="独立调用 scholar_search")
 async def scholar_search(req: ScholarSearchRequest, db: Session = Depends(get_db)):
-    """直接调用 scholar_search 工具进行论文检索。"""
+    """直接调用 scholar_search 工具进行论文检索（带缓存）。"""
     start = time.time()
 
+    search_cache = get_search_cache()
+
+    # 1) 尝试从缓存获取
+    cached = search_cache.get(
+        query=req.query,
+        top_k=req.top_k,
+        category=req.category,
+        year_from=req.year_from,
+        score_threshold=req.score_threshold,
+    )
+    if cached is not None:
+        latency_ms = (time.time() - start) * 1000
+        record_search_latency(latency_ms)
+        crud.create_search_log(
+            db,
+            query=req.query,
+            top_k=req.top_k,
+            threshold=req.score_threshold,
+            result_count=len(cached),
+            latency_ms=latency_ms,
+        )
+        papers = [PaperResult(**r) for r in cached]
+        return APIResponse(data=papers)
+
+    # 2) 缓存未命中，调用检索工具
     try:
         results = scholar_search_tool.invoke({
             "query": req.query,
@@ -50,7 +76,16 @@ async def scholar_search(req: ScholarSearchRequest, db: Session = Depends(get_db
     latency_ms = (time.time() - start) * 1000
     record_search_latency(latency_ms)
 
-    # 记录检索日志到数据库
+    # 3) 写入缓存
+    search_cache.put(
+        query=req.query,
+        top_k=req.top_k,
+        results=results,
+        category=req.category,
+        year_from=req.year_from,
+        score_threshold=req.score_threshold,
+    )
+
     crud.create_search_log(
         db,
         query=req.query,
@@ -73,8 +108,10 @@ async def similar_papers(
     ollama_url: str = Depends(get_ollama_base_url),
     embed_model: str = Depends(get_ollama_embed_model),
 ):
-    """基于指定论文的 embedding 查找相似论文。"""
+    """基于指定论文的 embedding 查找相似论文（Embedding 缓存加速）。"""
     start = time.time()
+
+    embedding_cache = get_embedding_cache()
 
     try:
         from qdrant_client.http.models import Filter, FieldCondition, MatchValue
@@ -105,14 +142,18 @@ async def similar_papers(
         if not query_text:
             raise HTTPException(status_code=400, detail="论文缺少标题和摘要信息")
 
-        r = requests.post(
-            f"{ollama_url.rstrip('/')}/api/embed",
-            json={"model": embed_model, "input": query_text},
-            timeout=60,
-        )
-        r.raise_for_status()
-        data = r.json()
-        vec = data.get("embeddings", [[]])[0] or data.get("embedding", [])
+        # 使用 Embedding 缓存
+        def _embed(text: str) -> list[float]:
+            r = requests.post(
+                f"{ollama_url.rstrip('/')}/api/embed",
+                json={"model": embed_model, "input": text},
+                timeout=60,
+            )
+            r.raise_for_status()
+            data = r.json()
+            return data.get("embeddings", [[]])[0] or data.get("embedding", [])
+
+        vec = embedding_cache.get_or_compute(query_text, _embed)
 
         if not vec:
             raise HTTPException(status_code=500, detail="Embedding 生成失败")
@@ -158,7 +199,6 @@ async def similar_papers(
     latency_ms = (time.time() - start) * 1000
     record_search_latency(latency_ms)
 
-    # 记录检索日志
     crud.create_search_log(
         db,
         query=f"similar:{req.arxiv_id}",
@@ -169,3 +209,22 @@ async def similar_papers(
     )
 
     return APIResponse(data=results)
+
+
+@router.get("/cache/stats", summary="缓存统计")
+async def cache_stats():
+    """查看 Embedding 缓存和检索结果缓存的命中率等统计信息。"""
+    return APIResponse(data={
+        "embedding_cache": get_embedding_cache().stats(),
+        "search_cache": get_search_cache().stats(),
+    })
+
+
+@router.post("/cache/clear", summary="清空缓存")
+async def cache_clear():
+    """清空所有缓存。"""
+    embed_cleared = get_embedding_cache().clear()
+    search_cleared = get_search_cache().clear()
+    return APIResponse(
+        message=f"已清空缓存: embedding={embed_cleared}, search={search_cleared}"
+    )

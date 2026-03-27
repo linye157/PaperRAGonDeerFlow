@@ -20,6 +20,7 @@
 * `scripts/ingest_ai_arxiv_chunked.py`：本地知识库构建（数据加载→向量化→Qdrant upsert）
 * `src/api/`：RESTful API 层（FastAPI router + Pydantic + 中间件）
 * `src/db/`：数据库持久化层（SQLite + SQLAlchemy ORM）
+* `src/cache/`：缓存层（Embedding 缓存 + 检索结果缓存）
 
 > 注：`scripts/ingest_ai_arxiv_chunked.py` 脚本用于将 HuggingFace 上的 `jamescalam/ai-arxiv-chunked` 数据集入库到 Qdrant，作为本地论文知识库。该数据集收集了来自 ArXiv 的 400 多篇与机器学习、自然语言处理、大型语言模型等主题相关的论文，文本已经被预处理成较小的段落（通常是 1–2 段落），每条记录对应一种”chunk”，从而支持快速检索或嵌入计算。
 
@@ -494,6 +495,7 @@ docker compose -f docker-compose.scholar.yml down
 * 数据库持久化：SQLite + SQLAlchemy ORM，对话历史/入库任务/检索日志全量持久化
 * Docker Compose 一键部署：API + Qdrant + Ollama + Redis 统一编排
 * 健康检查与结构化日志：四服务连通性检测 + JSON 格式日志 + 请求 ID 链路追踪
+* 缓存层：Embedding 缓存（LRU）+ 检索结果缓存（LRU + TTL），减少重复计算
 
 ---
 
@@ -536,6 +538,38 @@ docker compose -f docker-compose.scholar.yml down
 {"timestamp": "2026-03-27 10:00:00", "level": "INFO", "module": "middleware", "message": "[a1b2c3d4] --> POST /api/v1/search/scholar", "request_id": "a1b2c3d4"}
 {"timestamp": "2026-03-27 10:00:01", "level": "INFO", "module": "middleware", "message": "[a1b2c3d4] <-- POST /api/v1/search/scholar 200 156.3ms", "request_id": "a1b2c3d4"}
 ```
+
+### 10.9 缓存层
+
+引入两级内存缓存，减少重复 Embedding 计算和 Qdrant 查询延迟。生产环境可替换为 Redis 实现。
+
+**模块结构：**
+```
+src/cache/
+├── __init__.py
+├── embedding_cache.py   # Query Embedding 缓存（LRU，默认 1024 条）
+└── search_cache.py      # 检索结果缓存（LRU + TTL，默认 256 条，5 分钟过期）
+```
+
+**缓存策略：**
+
+| 缓存类型 | 淘汰策略 | 容量 | TTL | 命中条件 |
+|----------|----------|------|-----|----------|
+| EmbeddingCache | LRU | 1024 | 无 | query 文本 MD5 匹配 |
+| SearchCache | LRU + TTL | 256 | 300s | query + top_k + category + year_from + threshold 组合匹配 |
+
+**缓存管理 API：**
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/search/cache/stats` | 查看缓存命中率统计 |
+| POST | `/api/v1/search/cache/clear` | 清空所有缓存 |
+
+**特性：**
+- 线程安全（`threading.Lock`）
+- Embedding 缓存：在锁外计算，避免阻塞并发请求
+- 检索结果缓存：支持 TTL 过期，避免返回过期数据
+- 缓存命中率监控，便于调优
 
 ---
 
@@ -663,4 +697,4 @@ RAG 评测报告
 4.  ~~RESTful API 体系~~（已完成，见 10. RESTful API 体系）；
 5.  ~~数据库持久化层~~（已完成，见 10.6 数据库持久化层）；
 6.  ~~Docker Compose 统一编排~~（已完成，见 10.7 Docker Compose 一键部署）；
-7.  缓存层（Embedding 缓存 + 检索结果缓存）。
+7.  ~~缓存层~~（已完成，见 10.9 缓存层）。
