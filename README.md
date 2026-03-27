@@ -364,7 +364,8 @@ src/api/
 
 | 方法 | 路径 | 说明 |
 |------|------|------|
-| POST | `/api/v1/knowledge/ingest` | 触发论文入库（异步） |
+| POST | `/api/v1/knowledge/ingest` | 触发论文入库（BackgroundTasks 异步） |
+| GET | `/api/v1/knowledge/tasks` | 获取入库任务列表 |
 | GET | `/api/v1/knowledge/tasks/{id}` | 查询入库任务状态 |
 | GET | `/api/v1/knowledge/tasks/{id}/progress` | SSE 推送入库进度 |
 | GET | `/api/v1/knowledge/stats` | 知识库统计信息 |

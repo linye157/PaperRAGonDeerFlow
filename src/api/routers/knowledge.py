@@ -1,4 +1,4 @@
-"""知识库管理 API：入库触发、任务状态、统计信息、论文删除。"""
+"""知识库管理 API：入库触发（异步 BackgroundTasks）、任务状态、统计信息、论文删除。"""
 
 import asyncio
 import json
@@ -8,10 +8,11 @@ import uuid
 from datetime import datetime, timezone
 
 import requests
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from qdrant_client import QdrantClient
 from qdrant_client.http.models import Filter, FieldCondition, MatchValue
+from sqlalchemy.orm import Session
 
 from src.api.dependencies import (
     get_ollama_base_url,
@@ -47,7 +48,7 @@ def _task_to_response(task) -> IngestTaskResponse:
 
 
 def _run_ingest_pipeline(task_id: str, req: IngestRequest) -> None:
-    """执行论文入库 ETL 流水线（同步，由线程池调用）。"""
+    """执行论文入库 ETL 流水线（同步函数，由 BackgroundTasks 在线程池中调用）。"""
     with SessionLocal() as db:
         crud.update_ingest_task(db, task_id, status="processing")
 
@@ -65,6 +66,8 @@ def _run_ingest_pipeline(task_id: str, req: IngestRequest) -> None:
             if req.limit and req.limit < len(ds):
                 ds = ds.select(range(req.limit))
             crud.update_ingest_task(db, task_id, total_chunks=len(ds))
+
+            logger.info(f"[IngestTask {task_id}] 开始处理 {len(ds)} 条记录")
 
             # 2) 初始化 Qdrant
             api_key = os.getenv("QDRANT_API_KEY")
@@ -111,6 +114,7 @@ def _run_ingest_pipeline(task_id: str, req: IngestRequest) -> None:
                 qc.upsert(collection_name=collection, points=buf_points)
                 processed += len(buf_points)
                 crud.update_ingest_task(db, task_id, processed_chunks=processed)
+                logger.info(f"[IngestTask {task_id}] 进度: {processed}/{len(ds)}")
                 buf_points, buf_texts = [], []
 
             for row in ds:
@@ -150,23 +154,38 @@ def _run_ingest_pipeline(task_id: str, req: IngestRequest) -> None:
                 status="completed",
                 completed_at=datetime.now(timezone.utc),
             )
+            logger.info(f"[IngestTask {task_id}] 完成，共处理 {processed} 条")
 
         except Exception as e:
-            logger.error(f"Ingest pipeline failed: {e}", exc_info=True)
+            logger.error(f"[IngestTask {task_id}] 失败: {e}", exc_info=True)
             crud.update_ingest_task(db, task_id, status="failed", error_message=str(e))
 
 
 @router.post("/ingest", summary="触发论文入库（异步任务）")
-async def trigger_ingest(req: IngestRequest, db: Session = Depends(get_db)):
-    """创建异步入库任务，使用线程池执行 ETL 流水线。"""
-    from sqlalchemy.orm import Session
-
+async def trigger_ingest(
+    req: IngestRequest,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+):
+    """创建异步入库任务，通过 FastAPI BackgroundTasks 在后台执行 ETL 流水线。"""
     task = crud.create_ingest_task(db, source_type=req.source_type)
+    background_tasks.add_task(_run_ingest_pipeline, task.id, req)
 
-    loop = asyncio.get_event_loop()
-    loop.run_in_executor(None, _run_ingest_pipeline, task.id, req)
+    return APIResponse(
+        message="入库任务已创建，后台执行中",
+        data=_task_to_response(task),
+    )
 
-    return APIResponse(data=_task_to_response(task))
+
+@router.get("/tasks", summary="获取入库任务列表")
+async def list_tasks(
+    skip: int = Query(0, ge=0, description="跳过条数"),
+    limit: int = Query(20, ge=1, le=100, description="返回条数"),
+    db: Session = Depends(get_db),
+):
+    """获取所有入库任务列表，按创建时间倒序。"""
+    tasks = crud.list_ingest_tasks(db, skip=skip, limit=limit)
+    return APIResponse(data=[_task_to_response(t) for t in tasks])
 
 
 @router.get("/tasks/{task_id}", summary="查询入库任务状态")
@@ -181,7 +200,6 @@ async def get_task_status(task_id: str, db: Session = Depends(get_db)):
 @router.get("/tasks/{task_id}/progress", summary="SSE 推送入库进度")
 async def task_progress(task_id: str):
     """通过 SSE 流式推送入库任务进度。"""
-    # 先检查任务是否存在
     with SessionLocal() as db:
         task = crud.get_ingest_task(db, task_id)
         if not task:

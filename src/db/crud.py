@@ -93,6 +93,18 @@ def get_ingest_task(db: Session, task_id: str) -> Optional[IngestTask]:
     return db.query(IngestTask).filter(IngestTask.id == task_id).first()
 
 
+def list_ingest_tasks(
+    db: Session, skip: int = 0, limit: int = 20
+) -> list[IngestTask]:
+    return (
+        db.query(IngestTask)
+        .order_by(IngestTask.created_at.desc())
+        .offset(skip)
+        .limit(limit)
+        .all()
+    )
+
+
 def update_ingest_task(
     db: Session,
     task_id: str,
