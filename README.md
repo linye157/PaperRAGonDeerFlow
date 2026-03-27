@@ -121,9 +121,15 @@ OLLAMA_EMBED_MODEL=nomic-embed-text:latest
 
 # 检索阈值：根据标定结果设置（本项目经验值 0.62）
 SCHOLAR_SCORE_THRESHOLD=0.62
+
+# Ollama Chat 模型（用于评测脚本的生成评估，可选）
+# 运行 ollama list 查看已安装的模型
+OLLAMA_CHAT_MODEL=qwen3:14b
 ```
 
 > 注：你已验证本项目数据分布下 `0.62` 比 `0.72/0.75` 更合理。
+> 
+> 注：`OLLAMA_CHAT_MODEL` 需要设置为你已安装的 Ollama 模型（如 `qwen3:14b`、`llama3.1:latest` 等），用于评测脚本的生成质量评估。
 
 ---
 
@@ -304,21 +310,105 @@ cd ..
 
 ---
 
-## 10. API 调用（可选）
+## 10. RESTful API 体系（v1）
 
-DeerFlow 后端 SSE 接口：`POST /api/chat/stream`。
+项目提供了完整的 RESTful API 服务，基于 FastAPI 构建，支持 OpenAPI 文档自动生成。
 
-Deer‑Scholar 模式示例（通过 `mode` 路由，不需要 `/scholar` 前缀）：
+### 10.1 启动 API 服务
 
 ```bash
-curl -X POST http://localhost:8000/api/chat/stream \
-  -H "Content-Type: application/json" \
-  -d '{
-    "mode": "scholar",
-    "thread_id": "conversation_scholar_1",
-    "messages": [{"role": "user", "content": "请基于本地检索到的论文片段回答：LoRA 的核心思想是什么？并给出 [arXiv:ID] 引用。"}]
-  }'
+uv run python -m src.api.main
 ```
+
+访问 API 文档：`http://localhost:8000/docs`
+
+### 10.2 API 架构
+
+```
+src/api/
+├── __init__.py
+├── main.py              # FastAPI 应用入口，挂载所有 router
+├── schemas.py           # Pydantic BaseModel 请求/响应模型
+├── dependencies.py      # 依赖注入（Qdrant client 等）
+├── middleware.py         # 中间件（请求日志、异常处理、CORS）
+└── routers/
+    ├── __init__.py
+    ├── chat.py          # 对话管理 API
+    ├── knowledge.py     # 知识库管理 API
+    ├── search.py        # 独立检索 API
+    └── system.py        # 系统管理 API
+```
+
+### 10.3 统一响应格式
+
+```json
+{"code": 200, "message": "success", "data": {...}}
+{"code": 4xx/5xx, "message": "error detail", "data": null}
+```
+
+### 10.4 API 端点一览
+
+#### 对话管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/chat/stream` | SSE 流式问答 |
+| POST | `/api/v1/chat/sessions` | 创建新对话 |
+| GET | `/api/v1/chat/sessions` | 获取对话列表 |
+| GET | `/api/v1/chat/sessions/{id}` | 获取对话历史 |
+| DELETE | `/api/v1/chat/sessions/{id}` | 删除对话 |
+
+#### 知识库管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/knowledge/ingest` | 触发论文入库（异步） |
+| GET | `/api/v1/knowledge/tasks/{id}` | 查询入库任务状态 |
+| GET | `/api/v1/knowledge/tasks/{id}/progress` | SSE 推送入库进度 |
+| GET | `/api/v1/knowledge/stats` | 知识库统计信息 |
+| DELETE | `/api/v1/knowledge/papers/{arxiv_id}` | 删除指定论文 |
+
+#### 独立检索
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| POST | `/api/v1/search/scholar` | 独立调用 scholar_search |
+| POST | `/api/v1/search/similar` | 相似论文推荐 |
+
+#### 系统管理
+
+| 方法 | 路径 | 说明 |
+|------|------|------|
+| GET | `/api/v1/health` | 健康检查（Qdrant/Ollama 连通性） |
+| GET | `/api/v1/metrics` | 基础指标（请求数、延迟等） |
+
+### 10.5 API 调用示例
+
+**流式问答：**
+```bash
+curl -N -X POST http://localhost:8000/api/v1/chat/stream \
+  -H "Content-Type: application/json" \
+  -d '{"query": "LoRA 的核心思想是什么？", "mode": "scholar"}'
+```
+
+**论文检索：**
+```bash
+curl -X POST http://localhost:8000/api/v1/search/scholar \
+  -H "Content-Type: application/json" \
+  -d '{"query": "latent diffusion models", "top_k": 5}'
+```
+
+**健康检查：**
+```bash
+curl http://localhost:8000/api/v1/health
+```
+
+**知识库统计：**
+```bash
+curl http://localhost:8000/api/v1/knowledge/stats
+```
+
+> 注：DeerFlow 原有的 `POST /api/chat/stream` 接口仍保留在 `src/server/app.py` 中，新的 v1 API 是独立的服务入口
 
 ---
 
@@ -331,11 +421,128 @@ curl -X POST http://localhost:8000/api/chat/stream \
 
 ---
 
-## 12. License
+## 12. RAG 评测框架
+
+为了量化评估 RAG 系统的效果，本项目提供了完整的评测脚本 `scripts/evaluate_rag.py`。
+
+### 12.1 评测指标体系
+
+#### 检索质量指标
+
+| 指标 | 说明 | 计算方式 |
+|------|------|----------|
+| **Recall@K** | 召回率 | 检索到的相关文档数 / 总相关文档数 |
+| **Precision@K** | 精确率 | 检索到的相关文档数 / K |
+| **Hit Rate** | 命中率 | 至少检索到一个相关文档的查询比例 |
+| **MRR** | 平均倒数排名 | 第一个正确答案位置倒数的平均值 |
+
+#### 生成质量指标（LLM-as-Judge）
+
+| 指标 | 说明 |
+|------|------|
+| **Faithfulness** | 答案是否基于检索内容（降幻觉） |
+| **Answer Relevancy** | 答案与问题的相关程度 |
+| **Keyword Coverage** | 答案中预期关键词的覆盖率 |
+
+#### 引用质量指标
+
+| 指标 | 说明 |
+|------|------|
+| **Citation Coverage** | 检索结果中包含相关论文的比例 |
+| **Citation Accuracy** | 引用的 arXiv ID 格式正确率 |
+
+### 12.2 快速开始
+
+```bash
+# 1. 基础评测（使用内置示例评测集）
+uv run python scripts/evaluate_rag.py
+
+# 2. 仅检索评测（更快，跳过 LLM 生成评估）
+uv run python scripts/evaluate_rag.py --retrieval-only
+
+# 3. 调整参数并输出详细日志
+uv run python scripts/evaluate_rag.py --top-k 5 --score-threshold 0.62 --verbose
+
+# 4. 导出结果到 JSON
+uv run python scripts/evaluate_rag.py --output eval_results.json
+```
+
+### 12.3 自定义评测集
+
+创建 JSON 格式的评测数据集：
+
+```json
+[
+    {
+        "query": "LoRA 的核心思想是什么？",
+        "ground_truth_answer": "LoRA 通过低秩矩阵分解来高效微调大模型...",
+        "relevant_arxiv_ids": ["2106.09685"],
+        "expected_keywords": ["low-rank", "adaptation", "fine-tuning"]
+    }
+]
+```
+
+字段说明：
+- `query`：测试问题（必填）
+- `relevant_arxiv_ids`：相关论文 arXiv ID 列表（必填，用于检索评估）
+- `ground_truth_answer`：标准答案（可选，用于参考）
+- `expected_keywords`：答案应包含的关键词（可选）
+
+使用自定义评测集：
+
+```bash
+uv run python scripts/evaluate_rag.py --eval-file my_eval_dataset.json
+```
+
+### 12.4 评测报告示例
+
+```
+============================================================
+RAG 评测报告
+============================================================
+时间: 2024-01-15T10:30:00
+配置: top_k=5, threshold=0.62
+
+【检索质量指标】
+  Recall@K:      0.800
+  Precision@K:   0.160
+  Hit Rate:      0.800
+  MRR:           0.700
+  Avg Score:     0.712
+  成功查询:      5/5
+
+【生成质量指标】
+  Faithfulness:     0.850
+  Answer Relevancy: 0.900
+  Keyword Coverage: 0.750
+
+【引用质量指标】
+  Citation Coverage:  0.800
+  Citation Accuracy:  1.000
+  Total Citations:    25
+============================================================
+```
+
+### 12.5 评测最佳实践
+
+1. **构建领域评测集**：根据实际使用场景，构建 50-100 条高质量评测数据
+2. **迭代调优阈值**：通过评测结果调整 `SCHOLAR_SCORE_THRESHOLD`
+3. **对比实验**：对比有/无 RAG 的效果差异
+4. **定期评测**：在知识库更新后重新评测
+
+---
+
+## 13. License
 
 本项目遵循 [deer-flow ](https://github.com/bytedance/deer-flow)原项目 License（MIT）。
 
+---
+
 ## TODO：
 1.  支持增量入库与 PDF/本地文件解析；
-2.  做离线评测集，量化 recall/precision 与引用覆盖率；
-3.  在 UI 上提供“引用片段高亮/跳转原文”提升可用性。
+2.  ~~做离线评测集，量化 recall/precision 与引用覆盖率~~（已完成，见 12. RAG 评测框架）；
+3.  在 UI 上提供”引用片段高亮/跳转原文”提升可用性；
+4.  ~~RESTful API 体系~~（已完成，见 10. RESTful API 体系）；
+5.  数据库持久化层（SQLite + SQLAlchemy）；
+6.  Docker Compose 统一编排；
+7.  缓存层（Embedding 缓存 + 检索结果缓存）。

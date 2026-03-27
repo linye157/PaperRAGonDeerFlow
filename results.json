@@ -1,0 +1,152 @@
+{
+  "timestamp": "2026-02-05T13:45:05.173237",
+  "config": {
+    "top_k": 5,
+    "score_threshold": 0.0,
+    "eval_file": null,
+    "retrieval_only": false
+  },
+  "retrieval": {
+    "recall_at_k": 0.2,
+    "precision_at_k": 0.04,
+    "hit_rate": 0.2,
+    "mrr": 0.2,
+    "avg_score": 0.6522726776000001,
+    "total_queries": 5,
+    "successful_queries": 5
+  },
+  "generation": {
+    "faithfulness": 0.96,
+    "answer_relevancy": 0.86,
+    "keyword_coverage": 0.8099999999999999,
+    "total_evaluated": 5
+  },
+  "citation": {
+    "citation_coverage": 0.2,
+    "citation_accuracy": 1.0,
+    "total_citations": 25
+  },
+  "detailed_results": [
+    {
+      "query": "What is the core idea of LoRA (Low-Rank Adaptation)?",
+      "expected_ids": [
+        "2106.09685"
+      ],
+      "retrieved_ids": [
+        "2110.03215",
+        "2104.08758",
+        "2204.07580",
+        "2302.13971",
+        "2206.06336"
+      ],
+      "scores": [
+        0.6412573,
+        0.56808364,
+        0.5593739,
+        0.5436225,
+        0.5435142
+      ],
+      "recall": 0.0,
+      "precision": 0.0,
+      "hit": 0,
+      "rr": 0.0
+    },
+    {
+      "query": "How does latent diffusion model work?",
+      "expected_ids": [
+        "2112.10752"
+      ],
+      "retrieved_ids": [
+        "2112.10752",
+        "2306.05949",
+        "2205.01663",
+        "2202.12040",
+        "2205.10625"
+      ],
+      "scores": [
+        0.69112647,
+        0.6076945,
+        0.58931553,
+        0.5792177,
+        0.5768877
+      ],
+      "recall": 1.0,
+      "precision": 0.2,
+      "hit": 1,
+      "rr": 1.0
+    },
+    {
+      "query": "What is the transformer architecture?",
+      "expected_ids": [
+        "1706.03762"
+      ],
+      "retrieved_ids": [
+        "2004.05150",
+        "1909.08053",
+        "2101.03961",
+        "2301.13196",
+        "2207.10551"
+      ],
+      "scores": [
+        0.7382097,
+        0.67125416,
+        0.65369487,
+        0.6443229,
+        0.6365261
+      ],
+      "recall": 0.0,
+      "precision": 0.0,
+      "hit": 0,
+      "rr": 0.0
+    },
+    {
+      "query": "Explain BERT pre-training approach",
+      "expected_ids": [
+        "1810.04805"
+      ],
+      "retrieved_ids": [
+        "2203.07814",
+        "1908.04577",
+        "2111.02080",
+        "2206.06336",
+        "2210.02875"
+      ],
+      "scores": [
+        0.7806347,
+        0.77231365,
+        0.75996363,
+        0.7248616,
+        0.6930714
+      ],
+      "recall": 0.0,
+      "precision": 0.0,
+      "hit": 0,
+      "rr": 0.0
+    },
+    {
+      "query": "What is GPT and how does it generate text?",
+      "expected_ids": [
+        "2005.14165",
+        "1801.06146"
+      ],
+      "retrieved_ids": [
+        "2102.04351",
+        "2009.11462",
+        "2211.00295",
+        "2206.05802",
+        "2301.11305"
+      ],
+      "scores": [
+        0.6866297,
+        0.66653943,
+        0.6641852,
+        0.6584566,
+        0.65605986
+      ],
+      "recall": 0.0,
+      "precision": 0.0,
+      "hit": 0,
+      "rr": 0.0
+    }
+  ]
+}
