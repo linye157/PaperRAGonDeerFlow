@@ -441,6 +441,46 @@ src/db/
 DATABASE_URL=sqlite:///./custom_path/my.db
 ```
 
+### 10.7 Docker Compose 一键部署
+
+使用 `docker-compose.scholar.yml` 一条命令启动全部服务（API + Qdrant + Ollama + Redis）。
+
+**启动：**
+```bash
+# 启动全部服务
+docker compose -f docker-compose.scholar.yml up -d
+
+# 首次启动需要拉取 Ollama embedding 模型
+docker exec deer-scholar-ollama ollama pull nomic-embed-text:latest
+
+# 查看服务状态
+docker compose -f docker-compose.scholar.yml ps
+
+# 查看 API 日志
+docker compose -f docker-compose.scholar.yml logs -f api
+```
+
+**停止：**
+```bash
+docker compose -f docker-compose.scholar.yml down
+```
+
+**服务编排：**
+
+| 服务 | 镜像 | 端口 | 说明 |
+|------|------|------|------|
+| api | Dockerfile.scholar | 8000 | Deer-Scholar API 服务 |
+| qdrant | qdrant/qdrant:latest | 6333, 6334 | 向量数据库 |
+| ollama | ollama/ollama:latest | 11434 | 本地 Embedding 模型服务 |
+| redis | redis:7-alpine | 6379 | 缓存（预留） |
+
+**数据持久化：**
+- Qdrant 数据：Docker volume `qdrant-storage`
+- Ollama 模型：Docker volume `ollama-models`
+- SQLite 数据库：宿主机 `./data/` 目录
+
+> 注：原有的 `docker-compose.yml` 用于 DeerFlow 前后端部署，`docker-compose.scholar.yml` 专用于 Deer-Scholar API 服务部署
+
 ---
 
 ## 11. 项目亮点
@@ -451,6 +491,7 @@ DATABASE_URL=sqlite:///./custom_path/my.db
 * 兼容离线部署：Ollama Embedding + 本地/内网 Qdrant
 * 完整 RESTful API 体系：14 个端点，统一响应格式，OpenAPI 文档自动生成
 * 数据库持久化：SQLite + SQLAlchemy ORM，对话历史/入库任务/检索日志全量持久化
+* Docker Compose 一键部署：API + Qdrant + Ollama + Redis 统一编排
 
 ---
 
@@ -577,5 +618,5 @@ RAG 评测报告
 3.  在 UI 上提供”引用片段高亮/跳转原文”提升可用性；
 4.  ~~RESTful API 体系~~（已完成，见 10. RESTful API 体系）；
 5.  ~~数据库持久化层~~（已完成，见 10.6 数据库持久化层）；
-6.  Docker Compose 统一编排；
+6.  ~~Docker Compose 统一编排~~（已完成，见 10.7 Docker Compose 一键部署）；
 7.  缓存层（Embedding 缓存 + 检索结果缓存）。

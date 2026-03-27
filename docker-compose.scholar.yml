@@ -1,0 +1,81 @@
+version: "3.9"
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.scholar
+    container_name: deer-scholar-api
+    ports:
+      - "8000:8000"
+    environment:
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION=deer_scholar_arxiv
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_EMBED_MODEL=nomic-embed-text:latest
+      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=sqlite:///./data/deer_scholar.db
+    env_file:
+      - .env
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+    volumes:
+      - ./data:/app/data
+      - ./conf.yaml:/app/conf.yaml:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    networks:
+      - deer-scholar-network
+
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: deer-scholar-qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant-storage:/qdrant/storage
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - deer-scholar-network
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: deer-scholar-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+    networks:
+      - deer-scholar-network
+
+  redis:
+    image: redis:7-alpine
+    container_name: deer-scholar-redis
+    ports:
+      - "6379:6379"
+    restart: unless-stopped
+    networks:
+      - deer-scholar-network
+
+volumes:
+  qdrant-storage:
+  ollama-models:
+
+networks:
+  deer-scholar-network:
+    driver: bridge
